@@ -153,6 +153,37 @@ void mltensor_cross_terms_fx (Box const& box, Array4<Real> const& fx,
 }
 
 AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+void mltensor_cross_terms_fx_rz (Box const& box, Array4<Real> const& fx,
+                                 Array4<Real const> const& vel,
+                                 Array4<Real const> const& etax,
+                                 Array4<Real const> const& kapx,
+                                 Array4<Real const> const& r_cc,
+                                 Array4<Real const> const& r_ex,
+                                 GpuArray<Real,AMREX_SPACEDIM> const& dxinv) noexcept
+{
+    const Real dxi = dxinv[0];
+    const Real dyi = dxinv[1];
+    const auto lo = amrex::lbound(box);
+    const auto hi = amrex::ubound(box);
+    constexpr Real twoThirds = Real(2./3.);
+
+    for     (int j = lo.y; j <= hi.y; ++j) {
+        AMREX_PRAGMA_SIMD
+        for (int i = lo.x; i <= hi.x; ++i) {
+            Real rx_inv = ( r_ex(i,j,0) <= 0.0 ) ? 0.0 : Real(1.0) / r_ex(i,j,0);
+            Real divu = rx_inv * dxi * ( r_cc(i,j,0) * vel(i,j,0,0) - r_cc(i-1,j,0) * vel(i-1,j,0,0) )
+                        +  (vel(i,j+1,0,1)+vel(i-1,j+1,0,1)-vel(i,j-1,0,1)-vel(i-1,j-1,0,1))*(Real(0.25)*dyi);
+            Real dudy = (vel(i,j+1,0,0)+vel(i-1,j+1,0,0)-vel(i,j-1,0,0)-vel(i-1,j-1,0,0))*(Real(0.25)*dyi);
+            Real xif = kapx(i,j,0);
+            Real mun = Real(0.5)*etax(i,j,0,0);  // restore the original eta
+            Real mut =           etax(i,j,0,1);
+            fx(i,j,0,0) = -mun*(-twoThirds*divu) - xif*divu;
+            fx(i,j,0,1) = -mut*dudy;
+        }
+    }
+}
+
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
 void mltensor_cross_terms_fy (Box const& box, Array4<Real> const& fy,
                               Array4<Real const> const& vel,
                               Array4<Real const> const& etay,
@@ -173,6 +204,38 @@ void mltensor_cross_terms_fy (Box const& box, Array4<Real> const& fy,
             Real xif = kapy(i,j,0);
             Real mun = Real(0.75)*(etay(i,j,0,1)-xif);  // restore the original eta
             Real mut =             etay(i,j,0,0);
+            fy(i,j,0,0) = -mut*dvdx;
+            fy(i,j,0,1) = -mun*(-twoThirds*divu) - xif*divu;
+        }
+    }
+}
+
+AMREX_GPU_HOST_DEVICE AMREX_FORCE_INLINE
+void mltensor_cross_terms_fy_rz (Box const& box, Array4<Real> const& fy,
+                                 Array4<Real const> const& vel,
+                                 Array4<Real const> const& etay,
+                                 Array4<Real const> const& kapy,
+                                 Array4<Real const> const& r_cc,
+                                 Array4<Real const> const& r_ey,
+                                 GpuArray<Real,AMREX_SPACEDIM> const& dxinv) noexcept
+{
+    const Real dxi = dxinv[0];
+    const Real dyi = dxinv[1];
+    const auto lo = amrex::lbound(box);
+    const auto hi = amrex::ubound(box);
+    constexpr Real twoThirds = Real(2./3.);
+
+    for     (int j = lo.y; j <= hi.y; ++j) {
+        AMREX_PRAGMA_SIMD
+        for (int i = lo.x; i <= hi.x; ++i) {
+            Real divu =  (   r_cc(i+1,j,0) * vel(i+1,j,0,0) + r_cc(i+1,j-1,0) * vel(i+1,j-1,0,0)
+                           - r_cc(i-1,j,0) * vel(i-1,j,0,0) - r_cc(i-1,j-1,0) * vel(i-1,j-1,0,0) )
+                         * Real(1.0) / r_ey(i,j,0) * (Real(0.25)*dxi)
+                       + dyi * ( vel(i,j,0,1) - vel(i,j-1,0,1) );
+            Real dvdx = (vel(i+1,j,0,1)+vel(i+1,j-1,0,1)-vel(i-1,j,0,1)-vel(i-1,j-1,0,1))*(Real(0.25)*dxi);
+            Real xif = kapy(i,j,0);
+            Real mun = Real(0.5)*etay(i,j,0,1);  // restore the original eta
+            Real mut =           etay(i,j,0,0);
             fy(i,j,0,0) = -mut*dvdx;
             fy(i,j,0,1) = -mun*(-twoThirds*divu) - xif*divu;
         }

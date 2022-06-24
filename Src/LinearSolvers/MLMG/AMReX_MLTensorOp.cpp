@@ -152,14 +152,34 @@ MLTensorOp::prepareForSolve ()
     }
 
     for (int amrlev = 0; amrlev < NAMRLevels(); ++amrlev) {
-        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
-            int icomp = idim;
-            MultiFab::Xpay(m_b_coeffs[amrlev][0][idim], Real(4./3.),
-                           m_kappa[amrlev][0][idim], 0, icomp, 1, 0);
+        if (m_has_metric_term) {
+           for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+               int icomp = idim;
+               m_b_coeffs[amrlev][0][idim].mult(2.0,icomp,1,0);
+           }
+        } else {
+           for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+               int icomp = idim;
+               MultiFab::Xpay(m_b_coeffs[amrlev][0][idim], Real(4./3.),
+                              m_kappa[amrlev][0][idim], 0, icomp, 1, 0);
+           }
         }
     }
 
     MLABecLaplacian::prepareForSolve();
+
+#if (AMREX_SPACEDIM != 3)
+    if (m_has_kappa) {
+        for (int alev = 0; alev < m_num_amr_levels; ++alev)
+        {
+            const int mglev = 0;
+            for (int idim = 0; idim < AMREX_SPACEDIM; ++idim)
+            {
+                applyMetricTerm(alev, mglev, m_kappa[alev][mglev][idim]);
+            }
+        }
+    }
+#endif
 
     for (int amrlev = NAMRLevels()-1; amrlev >= 0; --amrlev) {
         for (int mglev = 1; mglev < m_kappa[amrlev].size(); ++mglev) {
@@ -218,6 +238,27 @@ MLTensorOp::apply (int amrlev, int mglev, MultiFab& out, MultiFab& in, BCMode bc
     Array<MultiFab,AMREX_SPACEDIM> const& kapmf = m_kappa[amrlev][mglev];
     Real bscalar = m_b_scalar;
 
+#if (AMREX_SPACEDIM == 2)
+    MultiFab rad_cc;
+    Array<MultiFab,AMREX_SPACEDIM> rad_ec;
+    if (m_has_metric_term) {
+        rad_cc.define(out.boxArray(),out.DistributionMap(),1,1);
+        rad_cc.setVal(0.0);
+        rad_cc.setVal(1.0,0,1,0);
+        applyMetricTerm(amrlev, mglev, rad_cc);
+        for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
+            rad_ec[idim].define(convert(out.boxArray(),IntVect::TheDimensionVector(idim)),
+                                out.DistributionMap(),1,0);
+            rad_ec[idim].setVal(1.0);
+            applyMetricTerm(amrlev, mglev, rad_ec[idim]);
+        }
+    }
+    //VisMF::Write(rad_cc,"rad_cc");
+    //VisMF::Write(rad_ec[0],"rad_ecx");
+    //VisMF::Write(rad_ec[1],"rad_ecy");
+    //Abort();
+#endif
+
 #ifdef AMREX_USE_OMP
 #pragma omp parallel if (Gpu::notInLaunchRegion())
 #endif
@@ -246,15 +287,37 @@ MLTensorOp::apply (int amrlev, int mglev, MultiFab& out, MultiFab& in, BCMode bc
             AMREX_D_TERM(Array4<Real> const fxfab = fluxfab_tmp[0].array();,
                          Array4<Real> const fyfab = fluxfab_tmp[1].array();,
                          Array4<Real> const fzfab = fluxfab_tmp[2].array(););
+#if (AMREX_SPACEDIM == 2)
+            Array4<Real const> const r_ccfab = m_has_metric_term ? rad_cc.const_array(mfi)
+                                                                 : Array4<Real const>{};
+            Array4<Real const> const r_ecx   = m_has_metric_term ? rad_ec[0].const_array(mfi)
+                                                                 : Array4<Real const>{};
+            Array4<Real const> const r_ecy   = m_has_metric_term ? rad_ec[1].const_array(mfi)
+                                                                 : Array4<Real const>{};
+#endif
 
             AMREX_LAUNCH_HOST_DEVICE_LAMBDA_DIM
             ( xbx, txbx,
               {
-                  mltensor_cross_terms_fx(txbx,fxfab,vfab,etaxfab,kapxfab,dxinv);
+#if (AMREX_SPACEDIM == 2)
+                  if (m_has_metric_term) {
+                      mltensor_cross_terms_fx_rz(txbx,fxfab,vfab,etaxfab,kapxfab,r_ccfab,r_ecx,dxinv);
+                  } else
+#endif
+                  {
+                      mltensor_cross_terms_fx(txbx,fxfab,vfab,etaxfab,kapxfab,dxinv);
+                  }
               }
             , ybx, tybx,
               {
-                  mltensor_cross_terms_fy(tybx,fyfab,vfab,etayfab,kapyfab,dxinv);
+#if (AMREX_SPACEDIM == 2)
+                  if (m_has_metric_term) {
+                      mltensor_cross_terms_fy_rz(tybx,fyfab,vfab,etayfab,kapyfab,r_ccfab,r_ecy,dxinv);
+                  } else
+#endif
+                  {
+                      mltensor_cross_terms_fy(tybx,fyfab,vfab,etayfab,kapyfab,dxinv);
+                  }
               }
             , zbx, tzbx,
               {

@@ -155,7 +155,7 @@ MLTensorOp::prepareForSolve ()
         if (m_has_metric_term) {
            for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
                int icomp = idim;
-               m_b_coeffs[amrlev][0][idim].mult(2.0,icomp,1,0);
+               m_b_coeffs[amrlev][0][idim].mult(Real(2.),icomp,1,0);
            }
         } else {
            for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
@@ -242,10 +242,28 @@ MLTensorOp::apply (int amrlev, int mglev, MultiFab& out, MultiFab& in, BCMode bc
     MultiFab rad_cc;
     Array<MultiFab,AMREX_SPACEDIM> rad_ec;
     if (m_has_metric_term) {
+        const Real dx = m_geom[amrlev][mglev].CellSize(0);
+        const Real probxlo = m_geom[amrlev][mglev].ProbLo(0);
+        const Real domlo = m_geom[amrlev][mglev].Domain().smallEnd(0);
         rad_cc.define(out.boxArray(),out.DistributionMap(),1,1);
-        rad_cc.setVal(0.0);
-        rad_cc.setVal(1.0,0,1,0);
-        applyMetricTerm(amrlev, mglev, rad_cc);
+#ifdef AMREX_USE_OMP
+#pragma omp parallel if (Gpu::notInLaunchRegion())
+#endif
+        for (MFIter mfi(rad_cc,TilingIfNotGPU()); mfi.isValid(); ++mfi)
+        {
+            const Box& tbx = mfi.growntilebox();
+            Array4<Real> const& rad_arr = rad_cc.array(mfi);
+            AMREX_HOST_DEVICE_PARALLEL_FOR_3D ( tbx, i, j, k,
+            {
+                if ( i < domlo ) {
+                    Real rc = probxlo + (i+Real(0.5))*dx;
+                    rad_arr(i,j,k) = 0.0;
+                } else {
+                    Real rc = probxlo + (i+Real(0.5))*dx;
+                    rad_arr(i,j,k) = rc;
+                }
+            });
+        }
         for (int idim = 0; idim < AMREX_SPACEDIM; ++idim) {
             rad_ec[idim].define(convert(out.boxArray(),IntVect::TheDimensionVector(idim)),
                                 out.DistributionMap(),1,0);
@@ -253,10 +271,6 @@ MLTensorOp::apply (int amrlev, int mglev, MultiFab& out, MultiFab& in, BCMode bc
             applyMetricTerm(amrlev, mglev, rad_ec[idim]);
         }
     }
-    //VisMF::Write(rad_cc,"rad_cc");
-    //VisMF::Write(rad_ec[0],"rad_ecx");
-    //VisMF::Write(rad_ec[1],"rad_ecy");
-    //Abort();
 #endif
 
 #ifdef AMREX_USE_OMP
@@ -288,42 +302,45 @@ MLTensorOp::apply (int amrlev, int mglev, MultiFab& out, MultiFab& in, BCMode bc
                          Array4<Real> const fyfab = fluxfab_tmp[1].array();,
                          Array4<Real> const fzfab = fluxfab_tmp[2].array(););
 #if (AMREX_SPACEDIM == 2)
-            Array4<Real const> const r_ccfab = m_has_metric_term ? rad_cc.const_array(mfi)
-                                                                 : Array4<Real const>{};
-            Array4<Real const> const r_ecx   = m_has_metric_term ? rad_ec[0].const_array(mfi)
-                                                                 : Array4<Real const>{};
-            Array4<Real const> const r_ecy   = m_has_metric_term ? rad_ec[1].const_array(mfi)
-                                                                 : Array4<Real const>{};
-#endif
-
-            AMREX_LAUNCH_HOST_DEVICE_LAMBDA_DIM
-            ( xbx, txbx,
-              {
-#if (AMREX_SPACEDIM == 2)
-                  if (m_has_metric_term) {
+            if (m_has_metric_term) {
+                Array4<Real const> const r_ccfab = m_has_metric_term ? rad_cc.const_array(mfi)
+                                                                     : Array4<Real const>{};
+                Array4<Real const> const r_ecx   = m_has_metric_term ? rad_ec[0].const_array(mfi)
+                                                                     : Array4<Real const>{};
+                Array4<Real const> const r_ecy   = m_has_metric_term ? rad_ec[1].const_array(mfi)
+                                                                     : Array4<Real const>{};
+                AMREX_LAUNCH_HOST_DEVICE_LAMBDA_DIM
+                ( xbx, txbx,
+                  {
                       mltensor_cross_terms_fx_rz(txbx,fxfab,vfab,etaxfab,kapxfab,r_ccfab,r_ecx,dxinv);
-                  } else
+                  }
+                , ybx, tybx,
+                  {
+                      mltensor_cross_terms_fy_rz(tybx,fyfab,vfab,etayfab,kapyfab,r_ccfab,r_ecy,dxinv);
+                  }
+                , zbx, tzbx,
+                  {
+                      mltensor_cross_terms_fz(tzbx,fzfab,vfab,etazfab,kapzfab,dxinv);
+                  }
+                );
+            } else
 #endif
+            {
+                AMREX_LAUNCH_HOST_DEVICE_LAMBDA_DIM
+                ( xbx, txbx,
                   {
                       mltensor_cross_terms_fx(txbx,fxfab,vfab,etaxfab,kapxfab,dxinv);
                   }
-              }
-            , ybx, tybx,
-              {
-#if (AMREX_SPACEDIM == 2)
-                  if (m_has_metric_term) {
-                      mltensor_cross_terms_fy_rz(tybx,fyfab,vfab,etayfab,kapyfab,r_ccfab,r_ecy,dxinv);
-                  } else
-#endif
+                , ybx, tybx,
                   {
                       mltensor_cross_terms_fy(tybx,fyfab,vfab,etayfab,kapyfab,dxinv);
                   }
-              }
-            , zbx, tzbx,
-              {
-                  mltensor_cross_terms_fz(tzbx,fzfab,vfab,etazfab,kapzfab,dxinv);
-              }
-            );
+                , zbx, tzbx,
+                  {
+                      mltensor_cross_terms_fz(tzbx,fzfab,vfab,etazfab,kapzfab,dxinv);
+                  }
+                );
+            }
 
             if (m_overset_mask[amrlev][mglev]) {
                 const auto& osm = m_overset_mask[amrlev][mglev]->array(mfi);

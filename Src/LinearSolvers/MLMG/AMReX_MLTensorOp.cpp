@@ -161,6 +161,19 @@ MLTensorOp::prepareForSolve ()
 
     MLABecLaplacian::prepareForSolve();
 
+#if (AMREX_SPACEDIM != 3)
+    if (m_has_kappa) {
+        for (int alev = 0; alev < m_num_amr_levels; ++alev)
+        {
+            const int mglev = 0;
+            for (int idim = 0; idim < AMREX_SPACEDIM; ++idim)
+            {
+                applyMetricTerm(alev, mglev, m_kappa[alev][mglev][idim]);
+            }
+        }
+    }
+#endif
+
     for (int amrlev = NAMRLevels()-1; amrlev >= 0; --amrlev) {
         for (int mglev = 1; mglev < m_kappa[amrlev].size(); ++mglev) {
             if (m_has_kappa && m_overset_mask[amrlev][mglev]) {
@@ -246,7 +259,21 @@ MLTensorOp::apply (int amrlev, int mglev, MultiFab& out, MultiFab& in, BCMode bc
             AMREX_D_TERM(Array4<Real> const fxfab = fluxfab_tmp[0].array();,
                          Array4<Real> const fyfab = fluxfab_tmp[1].array();,
                          Array4<Real> const fzfab = fluxfab_tmp[2].array(););
-
+#if (AMREX_SPACEDIM == 2)
+            if (m_has_metric_term) {
+                AMREX_GPU_LAUNCH_HOST_DEVICE_LAMBDA_RANGE_2
+                ( xbx, txbx,
+                  {
+                      mltensor_cross_terms_fx_rz(txbx,fxfab,vfab,etaxfab,kapxfab,dxinv);
+                  }
+                , ybx, tybx,
+                  {
+                      mltensor_cross_terms_fy_rz(tybx,fyfab,vfab,etayfab,kapyfab,dxinv);
+                  }
+                );
+            } else
+#endif
+            {
             AMREX_LAUNCH_HOST_DEVICE_LAMBDA_DIM
             ( xbx, txbx,
               {
@@ -261,6 +288,7 @@ MLTensorOp::apply (int amrlev, int mglev, MultiFab& out, MultiFab& in, BCMode bc
                   mltensor_cross_terms_fz(tzbx,fzfab,vfab,etazfab,kapzfab,dxinv);
               }
             );
+            }
 
             if (m_overset_mask[amrlev][mglev]) {
                 const auto& osm = m_overset_mask[amrlev][mglev]->array(mfi);
